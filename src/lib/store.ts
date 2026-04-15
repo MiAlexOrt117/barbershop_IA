@@ -1,7 +1,7 @@
 import { addMinutes, endOfDay, format, isSameDay, parseISO } from "date-fns";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import type { Appointment, AppointmentInput, BarbershopState, Client, ClientInput, Service } from "./types";
+import type { Appointment, AppointmentInput, AppointmentUpdateInput, BarbershopState, Client, ClientInput, Service } from "./types";
 import { createSeedState } from "./seed";
 import { getServiceById } from "./metrics";
 
@@ -13,13 +13,14 @@ function buildEndTime(start: string, duration: number) {
  * Check if an appointment conflicts with existing appointments for the SAME BARBER
  * This is critical for multibarber: barberos can work simultaneously
  */
-function hasConflictForBarber(appointments: Appointment[], barberId: string | null, start: string, end: string) {
+function hasConflictForBarber(appointments: Appointment[], barberId: string | null, start: string, end: string, ignoredAppointmentId?: string) {
   if (!barberId) return false; // No barber assigned, no conflict
 
   const startTime = new Date(start).getTime();
   const endTime = new Date(end).getTime();
 
   return appointments.some((appointment) => {
+    if (ignoredAppointmentId && appointment.id === ignoredAppointmentId) return false;
     // Only check conflicts with same barber
     if (appointment.barberId !== barberId) return false;
     // Cancelled appointments don't block slots
@@ -48,6 +49,7 @@ export interface BarbershopActions {
   removeService: (serviceId: string) => void;
   upsertClient: (client: ClientInput) => Client;
   createAppointment: (input: AppointmentInput) => Appointment | null;
+  updateAppointment: (appointmentId: string, input: AppointmentUpdateInput) => Appointment | null;
   markCompleted: (appointmentId: string) => void;
   markPaid: (appointmentId: string) => void;
   cancelAppointment: (appointmentId: string) => void;
@@ -135,8 +137,10 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
           createdAt: now,
           createdBy: input.createdBy,
           updatedAt: now,
+          googleEventId: null,
           provider: "local",
           syncStatus: "pending",
+          syncError: undefined,
           cancellable: true,
           statusHistory: [
             {
@@ -150,6 +154,68 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
         set((state) => ({ appointments: [appointment, ...state.appointments] }));
         return appointment;
       },
+      updateAppointment: (appointmentId, input) => {
+        const state = get();
+        const current = state.appointments.find((appointment) => appointment.id === appointmentId);
+        if (!current) return null;
+
+        const service = getServiceById(state.services, input.serviceId);
+        if (!service) return null;
+
+        const end = buildEndTime(input.start, service.duration);
+
+        if (
+          hasConflictForBarber(state.appointments, input.barberId, input.start, end, appointmentId) ||
+          (current.status !== "blocked" && isAgendaClosed(state.appointments, input.start))
+        ) {
+          return null;
+        }
+
+        const barber = state.barbers.find((item) => item.id === input.barberId) ?? null;
+        const now = new Date().toISOString();
+        const updated: Appointment = {
+          ...current,
+          clientName: input.clientName.trim(),
+          clientPhone: input.clientPhone.trim(),
+          serviceId: service.id,
+          serviceName: service.name,
+          barberId: barber?.id ?? null,
+          barberName: barber?.name ?? "Sin asignar",
+          start: input.start,
+          end,
+          amount: service.price,
+          notes: input.notes ?? "",
+          updatedAt: now,
+          syncStatus: "pending",
+          syncError: undefined,
+          statusHistory: [
+            ...(current.statusHistory ?? []),
+            {
+              status: current.status,
+              timestamp: now,
+              reason: "Updated from schedule"
+            }
+          ]
+        };
+
+        if (updated.clientId) {
+          const existingClient = state.clients.find((client) => client.id === updated.clientId);
+          if (existingClient) {
+            get().upsertClient({
+              id: existingClient.id,
+              name: updated.clientName,
+              phone: updated.clientPhone,
+              internalNotes: existingClient.internalNotes,
+              vip: existingClient.vip
+            });
+          }
+        }
+
+        set((store) => ({
+          appointments: store.appointments.map((appointment) => (appointment.id === appointmentId ? updated : appointment))
+        }));
+        return updated;
+      },
       markCompleted: (appointmentId) =>
         set((state) => ({
           appointments: state.appointments.map((appointment) =>
@@ -159,6 +225,8 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
                   status: "completed",
                   completedAt: new Date().toISOString(),
                   updatedAt: new Date().toISOString(),
+                  syncStatus: "pending",
+                  syncError: undefined,
                   statusHistory: [
                     ...(appointment.statusHistory ?? []),
                     { status: "completed", timestamp: new Date().toISOString(), reason: "Marked as completed" }
@@ -189,6 +257,8 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
                   cancelledAt: new Date().toISOString(),
                   updatedAt: new Date().toISOString(),
                   paymentStatus: "pending",
+                  syncStatus: "pending",
+                  syncError: undefined,
                   statusHistory: [
                     ...(appointment.statusHistory ?? []),
                     { status: "cancelled", timestamp: new Date().toISOString(), reason: "Cancelled by user" }
@@ -205,6 +275,8 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
                   ...appointment,
                   status: "no-show",
                   updatedAt: new Date().toISOString(),
+                  syncStatus: "pending",
+                  syncError: undefined,
                   statusHistory: [
                     ...(appointment.statusHistory ?? []),
                     { status: "no-show", timestamp: new Date().toISOString(), reason: "Client did not show up" }
@@ -240,8 +312,10 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
           source: "blocked",
           createdAt: now,
           updatedAt: now,
+          googleEventId: null,
           provider: "local",
           syncStatus: "pending",
+          syncError: undefined,
           cancellable: false,
           statusHistory: [
             {

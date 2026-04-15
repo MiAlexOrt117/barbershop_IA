@@ -1,4 +1,6 @@
 export type Role = "owner" | "employee";
+export type CalendarProviderName = "local" | "google";
+export type AppointmentSyncStatus = "pending" | "synced" | "failed" | "conflict";
 
 export type AppointmentStatus =
   | "pending"
@@ -76,9 +78,10 @@ export interface Appointment {
   amount: number;
 
   // Calendar sync (for Google Calendar & external integrations)
-  externalEventId?: string; // Google Calendar event ID
-  provider?: "local" | "google"; // Where appointment is synced
-  syncStatus?: "pending" | "synced" | "failed" | "conflict";
+  googleEventId?: string | null;
+  externalEventId?: string;
+  provider?: CalendarProviderName;
+  syncStatus?: AppointmentSyncStatus;
   syncError?: string;
 
   // Audit trail
@@ -123,6 +126,15 @@ export interface AppointmentInput {
   notes?: string;
   walkIn?: boolean;
   createdBy?: string;
+}
+
+export interface AppointmentUpdateInput {
+  clientName: string;
+  clientPhone: string;
+  serviceId: string;
+  barberId: string;
+  start: string;
+  notes?: string;
 }
 
 export interface ClientInput {
