@@ -31,9 +31,17 @@ npm run lint
 
 ## Qué incluye
 
+## Estado actual
+
+- ✅ **Fase 2 completada**: agenda diaria real por horas, columnas por barbero, slots vacíos clicables, bloqueos visuales y acciones rápidas.
+- ✅ **Fase 3 completada**: OAuth 2.0 real con Google Calendar, cookie cifrada para sesión, sync create/update/cancel y fallback local.
+- ✅ **Fase 4 completada**: domain events conectados a Make vía webhook dispatcher con retry, HMAC, idempotencia y logs consultables.
+- ✅ **Preparación de persistencia**: tipos de migración en `src/lib/persistence-types.ts` y propuesta SQL en `DATABASE_SCHEMA.md`.
+- ✅ **Despliegue preparado**: guía en `DEPLOYMENT.md` para Vercel y evolución a backend persistente.
+
 ### Core Features
 - ✅ Dashboard con KPIs y próxima cita
-- ✅ Agenda diaria (actualmente como lista, grilla en Fase 2)
+- ✅ Agenda diaria tipo Google Calendar
 - ✅ CRM de clientes con LTV y riesgo de abandono
 - ✅ Centro de campañas con segmentación
 - ✅ Analytics con gráficas y exportación CSV
@@ -104,9 +112,9 @@ El MVP arranca con datos mock realistas (30+ clientes, 50+ citas) persistidos en
 
 ### Google Calendar (Fase 3)
 - ✅ CalendarProvider abstraction ready
-- ⏳ OAuth 2.0 setup (need credentials)
-- ⏳ Bidirectional sync (create, update, delete events)
-- ⏳ Watch channels for real-time updates
+- ✅ OAuth 2.0 via `/api/integrations/google/connect` + callback
+- ✅ Bidirectional base sync (create, update, delete events)
+- ⏳ Watch channels for real-time updates (estructura lista, no activado por defecto)
 
 **Environment vars needed:**
 ```bash
@@ -117,9 +125,9 @@ NEXT_PUBLIC_GOOGLE_CALENDAR_ID=...
 
 ### Make Webhook (Fase 4)
 - ✅ WebhookDispatcher + IdempotencyStore ready
-- ✅ Domain events structure defined
-- ⏳ Connect store actions to emit events
-- ⏳ Setup Make webhook URL
+- ✅ Domain events emitted from store actions
+- ✅ POST real a webhook de Make mediante `/api/integrations/events/dispatch`
+- ✅ Logs de entrega consultables en `/api/integrations/webhooks/logs`
 
 **Environment var:**
 ```bash

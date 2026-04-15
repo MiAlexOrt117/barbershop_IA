@@ -1,6 +1,8 @@
 "use client";
 
 import { AppShell } from "@/components/app-shell";
+import { GoogleCalendarCard } from "@/components/google-calendar-card";
+import { MakeWebhookCard } from "@/components/make-webhook-card";
 import { Badge, Button, Card, Input, Label, Select, SectionTitle, Textarea } from "@/components/ui";
 import { useBarbershopStore } from "@/lib/store";
 import { buildWhatsAppLink } from "@/lib/whatsapp";
@@ -64,14 +66,8 @@ export default function SettingsPage() {
             </div>
           </Card>
 
-          <Card>
-            <SectionTitle eyebrow="Preparado para backend" title="Integración futura" />
-            <div className="mt-4 space-y-3 text-sm text-slate-300">
-              <div className="rounded-2xl bg-white/5 p-4">WhatsApp Business API, Twilio o Meta Cloud API pueden conectarse en la capa de servicios sin cambiar la UI.</div>
-              <div className="rounded-2xl bg-white/5 p-4">La persistencia actual vive en `localStorage` para demo, pero ya está separada del dominio.</div>
-              <div className="rounded-2xl bg-white/5 p-4">La misma estructura soporta multi-sucursal, pagos y automatizaciones CRM.</div>
-            </div>
-          </Card>
+          <GoogleCalendarCard />
+          <MakeWebhookCard />
         </section>
       </div>
     </AppShell>

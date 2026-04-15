@@ -3,7 +3,25 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type { Appointment, AppointmentInput, AppointmentUpdateInput, BarbershopState, Client, ClientInput, Service } from "./types";
 import { createSeedState } from "./seed";
+import { publishDomainEvent } from "./domain-event-client";
+import {
+  createAppointmentBlockedEvent,
+  createAppointmentCancelledEvent,
+  createAppointmentCompletedEvent,
+  createAppointmentCreatedEvent,
+  createAppointmentUpdatedEvent,
+  createNoShowEvent,
+  createWalkInCreatedEvent
+} from "./domain-events";
+import { syncAppointmentWithCalendar } from "./integration-client";
 import { getServiceById } from "./metrics";
+
+type StoreState = BarbershopState & BarbershopActions;
+type StoreSetter = (
+  partial:
+    | Partial<StoreState>
+    | ((state: StoreState) => Partial<StoreState>)
+) => void;
 
 function buildEndTime(start: string, duration: number) {
   return addMinutes(new Date(start), duration).toISOString();
@@ -40,6 +58,76 @@ function formatDayKey(value: string) {
 
 function isAgendaClosed(appointments: Appointment[], start: string) {
   return appointments.some((appointment) => appointment.source === "blocked" && formatDayKey(appointment.start) === formatDayKey(start) && new Date(start).getTime() >= new Date(appointment.start).getTime());
+}
+
+function applyCalendarSyncResult(
+  set: StoreSetter,
+  appointmentId: string,
+  result: {
+    success: boolean;
+    provider: "local" | "google";
+    googleEventId?: string | null;
+    externalEventId?: string;
+    error?: string;
+  }
+) {
+  set((state) => ({
+    appointments: state.appointments.map((appointment) =>
+      appointment.id === appointmentId
+        ? {
+            ...appointment,
+            provider: result.provider,
+            googleEventId: result.googleEventId ?? appointment.googleEventId ?? null,
+            externalEventId: result.externalEventId ?? result.googleEventId ?? appointment.externalEventId,
+            syncStatus: result.success ? "synced" : "failed",
+            syncError: result.success ? undefined : result.error
+          }
+        : appointment
+    )
+  }));
+}
+
+function syncAppointmentLifecycle(
+  set: StoreSetter,
+  get: () => StoreState,
+  action: "create" | "update" | "cancel",
+  appointment: Appointment
+) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  void syncAppointmentWithCalendar({
+    action,
+    appointment,
+    settings: {
+      name: get().settings.name,
+      address: get().settings.address,
+      timezone: get().settings.timezone
+    }
+  })
+    .then((result) => {
+      applyCalendarSyncResult(set, appointment.id, result);
+    })
+    .catch((error) => {
+      applyCalendarSyncResult(set, appointment.id, {
+        success: false,
+        provider: appointment.provider ?? "local",
+        googleEventId: appointment.googleEventId ?? null,
+        externalEventId: appointment.externalEventId,
+        error: error instanceof Error ? error.message : "Calendar sync failed"
+      });
+    });
+}
+
+function emitDomainEvent(event: ReturnType<typeof createAppointmentCreatedEvent>) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  void publishDomainEvent(event).catch(() => {
+    return;
+  });
 }
 
 export interface BarbershopActions {
@@ -152,6 +240,8 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
         };
 
         set((state) => ({ appointments: [appointment, ...state.appointments] }));
+        syncAppointmentLifecycle(set, get, "create", appointment);
+        emitDomainEvent(input.walkIn ? createWalkInCreatedEvent(appointment) : createAppointmentCreatedEvent(appointment));
         return appointment;
       },
       updateAppointment: (appointmentId, input) => {
@@ -214,27 +304,32 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
         set((store) => ({
           appointments: store.appointments.map((appointment) => (appointment.id === appointmentId ? updated : appointment))
         }));
+        syncAppointmentLifecycle(set, get, "update", updated);
+        emitDomainEvent(createAppointmentUpdatedEvent(updated));
         return updated;
       },
-      markCompleted: (appointmentId) =>
-        set((state) => ({
-          appointments: state.appointments.map((appointment) =>
-            appointment.id === appointmentId
-              ? {
-                  ...appointment,
-                  status: "completed",
-                  completedAt: new Date().toISOString(),
-                  updatedAt: new Date().toISOString(),
-                  syncStatus: "pending",
-                  syncError: undefined,
-                  statusHistory: [
-                    ...(appointment.statusHistory ?? []),
-                    { status: "completed", timestamp: new Date().toISOString(), reason: "Marked as completed" }
-                  ]
-                }
-              : appointment
-          )
-        })),
+      markCompleted: (appointmentId) => {
+        const state = get();
+        const current = state.appointments.find((appointment) => appointment.id === appointmentId);
+        if (!current) return;
+
+        const now = new Date().toISOString();
+        const updated: Appointment = {
+          ...current,
+          status: "completed",
+          completedAt: now,
+          updatedAt: now,
+          syncStatus: "pending",
+          syncError: undefined,
+          statusHistory: [...(current.statusHistory ?? []), { status: "completed", timestamp: now, reason: "Marked as completed" }]
+        };
+
+        set((store) => ({
+          appointments: store.appointments.map((appointment) => (appointment.id === appointmentId ? updated : appointment))
+        }));
+        syncAppointmentLifecycle(set, get, "update", updated);
+        emitDomainEvent(createAppointmentCompletedEvent(updated));
+      },
       markPaid: (appointmentId) =>
         set((state) => ({
           appointments: state.appointments.map((appointment) =>
@@ -247,48 +342,51 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
               : appointment
           )
         })),
-      cancelAppointment: (appointmentId) =>
-        set((state) => ({
-          appointments: state.appointments.map((appointment) =>
-            appointment.id === appointmentId
-              ? {
-                  ...appointment,
-                  status: "cancelled",
-                  cancelledAt: new Date().toISOString(),
-                  updatedAt: new Date().toISOString(),
-                  paymentStatus: "pending",
-                  syncStatus: "pending",
-                  syncError: undefined,
-                  statusHistory: [
-                    ...(appointment.statusHistory ?? []),
-                    { status: "cancelled", timestamp: new Date().toISOString(), reason: "Cancelled by user" }
-                  ]
-                }
-              : appointment
-          )
-        })),
-      markNoShow: (appointmentId) =>
-        set((state) => ({
-          appointments: state.appointments.map((appointment) =>
-            appointment.id === appointmentId
-              ? {
-                  ...appointment,
-                  status: "no-show",
-                  updatedAt: new Date().toISOString(),
-                  syncStatus: "pending",
-                  syncError: undefined,
-                  statusHistory: [
-                    ...(appointment.statusHistory ?? []),
-                    { status: "no-show", timestamp: new Date().toISOString(), reason: "Client did not show up" }
-                  ]
-                }
-              : appointment
-          ),
-          clients: state.clients.map((client) => {
-            const matched = state.appointments.find((appointment) => appointment.id === appointmentId && appointment.clientId === client.id);
-            return matched ? { ...client, noShows: client.noShows + 1 } : client;
-          })
-        })),
+      cancelAppointment: (appointmentId) => {
+        const state = get();
+        const current = state.appointments.find((appointment) => appointment.id === appointmentId);
+        if (!current) return;
+
+        const now = new Date().toISOString();
+        const updated: Appointment = {
+          ...current,
+          status: "cancelled",
+          cancelledAt: now,
+          updatedAt: now,
+          paymentStatus: "pending",
+          syncStatus: "pending",
+          syncError: undefined,
+          statusHistory: [...(current.statusHistory ?? []), { status: "cancelled", timestamp: now, reason: "Cancelled by user" }]
+        };
+
+        set((store) => ({
+          appointments: store.appointments.map((appointment) => (appointment.id === appointmentId ? updated : appointment))
+        }));
+        syncAppointmentLifecycle(set, get, "cancel", updated);
+        emitDomainEvent(createAppointmentCancelledEvent(updated));
+      },
+      markNoShow: (appointmentId) => {
+        const state = get();
+        const current = state.appointments.find((appointment) => appointment.id === appointmentId);
+        if (!current) return;
+
+        const now = new Date().toISOString();
+        const updated: Appointment = {
+          ...current,
+          status: "no-show",
+          updatedAt: now,
+          syncStatus: "pending",
+          syncError: undefined,
+          statusHistory: [...(current.statusHistory ?? []), { status: "no-show", timestamp: now, reason: "Client did not show up" }]
+        };
+
+        set((store) => ({
+          appointments: store.appointments.map((appointment) => (appointment.id === appointmentId ? updated : appointment)),
+          clients: store.clients.map((client) => (current.clientId === client.id ? { ...client, noShows: client.noShows + 1 } : client))
+        }));
+        syncAppointmentLifecycle(set, get, "update", updated);
+        emitDomainEvent(createNoShowEvent(updated));
+      },
       closeAgendaForDay: (dayIso) => {
         const state = get();
         const day = parseISO(dayIso);
@@ -327,6 +425,8 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
         };
 
         set({ appointments: [appointment, ...state.appointments.filter((item) => !isSameDay(parseISO(item.start), day) || item.status === "completed" || item.status === "cancelled")] });
+        syncAppointmentLifecycle(set, get, "create", appointment);
+        emitDomainEvent(createAppointmentBlockedEvent(appointment));
       },
       createWalkIn: (input) => get().createAppointment({ ...input, walkIn: true })
     }),

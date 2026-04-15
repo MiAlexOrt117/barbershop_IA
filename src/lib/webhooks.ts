@@ -7,6 +7,7 @@
  * 3. Idempotency for duplicate prevention
  */
 
+import { createHmac } from "node:crypto";
 import type { DomainEvent } from "./domain-events";
 
 export interface WebhookConfig {
@@ -37,14 +38,24 @@ export interface WebhookDeliveryLog {
  */
 export class WebhookDispatcher {
   private deliveryLogs: Map<string, WebhookDeliveryLog> = new Map();
+  private idempotencyStore: IdempotencyStore;
 
-  constructor(private config: WebhookConfig) {}
+  constructor(private config: WebhookConfig, idempotencyStore = new IdempotencyStore()) {
+    this.idempotencyStore = idempotencyStore;
+  }
 
   /**
    * Send an event to the configured webhook
    * Used by Make to receive real-time events
    */
   async dispatch(event: DomainEvent): Promise<WebhookDeliveryLog> {
+    const idempotencyKey = event.metadata?.idempotencyKey ?? event.id;
+    const existing = this.idempotencyStore.getResult(idempotencyKey);
+
+    if (existing) {
+      return existing as WebhookDeliveryLog;
+    }
+
     const logId = `log-${Date.now()}`;
     const log: WebhookDeliveryLog = {
       id: logId,
@@ -60,6 +71,9 @@ export class WebhookDispatcher {
 
     try {
       await this.sendWithRetry(event, log);
+      if (log.status === "delivered") {
+        this.idempotencyStore.markProcessed(idempotencyKey, log);
+      }
     } catch (error) {
       log.status = "failed";
       log.error = error instanceof Error ? error.message : "Unknown error";
@@ -133,7 +147,8 @@ export class WebhookDispatcher {
       "Content-Type": "application/json",
       "X-Event-Type": event.type,
       "X-Event-ID": event.id,
-      "X-Timestamp": event.timestamp
+      "X-Timestamp": event.timestamp,
+      "X-Idempotency-Key": event.metadata?.idempotencyKey ?? event.id
     };
 
     // Add signature if secret is configured
@@ -155,9 +170,11 @@ export class WebhookDispatcher {
    * Make can verify this to ensure authenticity
    */
   private computeSignature(payload: string): string {
-    // TODO: Implement HMAC-SHA256 signature
-    // For now, just a placeholder - requires crypto module
-    return `sha256=${Buffer.from(payload).toString("base64")}`;
+    if (!this.config.secret) {
+      return "";
+    }
+
+    return `sha256=${createHmac("sha256", this.config.secret).update(payload).digest("hex")}`;
   }
 
   /**
