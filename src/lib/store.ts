@@ -9,14 +9,26 @@ function buildEndTime(start: string, duration: number) {
   return addMinutes(new Date(start), duration).toISOString();
 }
 
-function hasConflict(appointments: Appointment[], start: string, end: string) {
+/**
+ * Check if an appointment conflicts with existing appointments for the SAME BARBER
+ * This is critical for multibarber: barberos can work simultaneously
+ */
+function hasConflictForBarber(appointments: Appointment[], barberId: string | null, start: string, end: string) {
+  if (!barberId) return false; // No barber assigned, no conflict
+
   const startTime = new Date(start).getTime();
   const endTime = new Date(end).getTime();
 
   return appointments.some((appointment) => {
+    // Only check conflicts with same barber
+    if (appointment.barberId !== barberId) return false;
+    // Cancelled appointments don't block slots
     if (appointment.status === "cancelled") return false;
+
     const existingStart = new Date(appointment.start).getTime();
     const existingEnd = new Date(appointment.end).getTime();
+
+    // Check for conflict: new appointment overlaps with existing
     return startTime < existingEnd && endTime > existingStart;
   });
 }
@@ -87,8 +99,9 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
         if (!service) return null;
 
         const end = buildEndTime(input.start, service.duration);
-        const sameDayAppointments = state.appointments.filter((appointment) => isSameDay(parseISO(appointment.start), parseISO(input.start)));
-        if (hasConflict(sameDayAppointments, input.start, end) || isAgendaClosed(state.appointments, input.start)) {
+
+        // Check conflict only for the specific barber assigned
+        if (hasConflictForBarber(state.appointments, input.barberId, input.start, end) || isAgendaClosed(state.appointments, input.start)) {
           return null;
         }
 
@@ -102,6 +115,7 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
           clientId = client.id;
         }
 
+        const now = new Date().toISOString();
         const appointment: Appointment = {
           id: `appt-${Date.now()}`,
           clientId,
@@ -118,22 +132,86 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
           amount: service.price,
           notes: input.notes ?? "",
           source: input.walkIn ? "walk-in" : "scheduled",
-          createdAt: new Date().toISOString(),
-          cancellable: true
+          createdAt: now,
+          createdBy: input.createdBy,
+          updatedAt: now,
+          provider: "local",
+          syncStatus: "pending",
+          cancellable: true,
+          statusHistory: [
+            {
+              status: input.walkIn ? "walk-in" : "pending",
+              timestamp: now,
+              reason: "Created"
+            }
+          ]
         };
 
         set((state) => ({ appointments: [appointment, ...state.appointments] }));
         return appointment;
       },
       markCompleted: (appointmentId) =>
-        set((state) => ({ appointments: state.appointments.map((appointment) => (appointment.id === appointmentId ? { ...appointment, status: "completed" } : appointment)) })),
+        set((state) => ({
+          appointments: state.appointments.map((appointment) =>
+            appointment.id === appointmentId
+              ? {
+                  ...appointment,
+                  status: "completed",
+                  completedAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                  statusHistory: [
+                    ...(appointment.statusHistory ?? []),
+                    { status: "completed", timestamp: new Date().toISOString(), reason: "Marked as completed" }
+                  ]
+                }
+              : appointment
+          )
+        })),
       markPaid: (appointmentId) =>
-        set((state) => ({ appointments: state.appointments.map((appointment) => (appointment.id === appointmentId ? { ...appointment, paymentStatus: "paid" } : appointment)) })),
+        set((state) => ({
+          appointments: state.appointments.map((appointment) =>
+            appointment.id === appointmentId
+              ? {
+                  ...appointment,
+                  paymentStatus: "paid",
+                  updatedAt: new Date().toISOString()
+                }
+              : appointment
+          )
+        })),
       cancelAppointment: (appointmentId) =>
-        set((state) => ({ appointments: state.appointments.map((appointment) => (appointment.id === appointmentId ? { ...appointment, status: "cancelled", paymentStatus: "pending" } : appointment)) })),
+        set((state) => ({
+          appointments: state.appointments.map((appointment) =>
+            appointment.id === appointmentId
+              ? {
+                  ...appointment,
+                  status: "cancelled",
+                  cancelledAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                  paymentStatus: "pending",
+                  statusHistory: [
+                    ...(appointment.statusHistory ?? []),
+                    { status: "cancelled", timestamp: new Date().toISOString(), reason: "Cancelled by user" }
+                  ]
+                }
+              : appointment
+          )
+        })),
       markNoShow: (appointmentId) =>
         set((state) => ({
-          appointments: state.appointments.map((appointment) => (appointment.id === appointmentId ? { ...appointment, status: "no-show" } : appointment)),
+          appointments: state.appointments.map((appointment) =>
+            appointment.id === appointmentId
+              ? {
+                  ...appointment,
+                  status: "no-show",
+                  updatedAt: new Date().toISOString(),
+                  statusHistory: [
+                    ...(appointment.statusHistory ?? []),
+                    { status: "no-show", timestamp: new Date().toISOString(), reason: "Client did not show up" }
+                  ]
+                }
+              : appointment
+          ),
           clients: state.clients.map((client) => {
             const matched = state.appointments.find((appointment) => appointment.id === appointmentId && appointment.clientId === client.id);
             return matched ? { ...client, noShows: client.noShows + 1 } : client;
@@ -143,6 +221,7 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
         const state = get();
         const day = parseISO(dayIso);
         const blockedStart = new Date(day);
+        const now = new Date().toISOString();
         const appointment: Appointment = {
           id: `blocked-${Date.now()}`,
           clientId: null,
@@ -159,8 +238,18 @@ export const useBarbershopStore = create<BarbershopState & BarbershopActions>()(
           amount: 0,
           notes: "Bloqueado por emergencia",
           source: "blocked",
-          createdAt: new Date().toISOString(),
-          cancellable: false
+          createdAt: now,
+          updatedAt: now,
+          provider: "local",
+          syncStatus: "pending",
+          cancellable: false,
+          statusHistory: [
+            {
+              status: "blocked",
+              timestamp: now,
+              reason: "Emergency closure"
+            }
+          ]
         };
 
         set({ appointments: [appointment, ...state.appointments.filter((item) => !isSameDay(parseISO(item.start), day) || item.status === "completed" || item.status === "cancelled")] });

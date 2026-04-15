@@ -55,6 +55,7 @@ export interface Client {
 }
 
 export interface Appointment {
+  // Core identity
   id: string;
   clientId: string | null;
   clientName: string;
@@ -63,14 +64,36 @@ export interface Appointment {
   serviceName: string;
   barberId: string | null;
   barberName: string;
+
+  // Scheduling
   start: string;
   end: string;
   status: AppointmentStatus;
+  source: "scheduled" | "walk-in" | "blocked";
+
+  // Payments
   paymentStatus: PaymentStatus;
   amount: number;
-  notes: string;
-  source: "scheduled" | "walk-in" | "blocked";
+
+  // Calendar sync (for Google Calendar & external integrations)
+  externalEventId?: string; // Google Calendar event ID
+  provider?: "local" | "google"; // Where appointment is synced
+  syncStatus?: "pending" | "synced" | "failed" | "conflict";
+  syncError?: string;
+
+  // Audit trail
   createdAt: string;
+  createdBy?: string; // User who created this appointment
+  updatedAt?: string;
+  completedAt?: string | null;
+  cancelledAt?: string | null;
+
+  // Status history for tracking changes
+  statusHistory?: Array<{ status: AppointmentStatus; timestamp: string; reason?: string }>;
+
+  // Notes & metadata
+  notes: string;
+  tags?: string[]; // For segmentation (VIP, urgent, etc)
   cancellable: boolean;
 }
 
@@ -99,6 +122,7 @@ export interface AppointmentInput {
   start: string;
   notes?: string;
   walkIn?: boolean;
+  createdBy?: string;
 }
 
 export interface ClientInput {

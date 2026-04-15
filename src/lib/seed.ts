@@ -136,6 +136,7 @@ function buildAppointments(clients: Client[]): Appointment[] {
       const end = addMinutes(new Date(start), service.duration).toISOString();
       const status = statusCycle[(index + slotIndex + dayOffset + 20) % statusCycle.length];
       const paymentStatus = status === "cancelled" || status === "pending" ? "pending" : "paid";
+      const createdAt = subDays(new Date(start), 1).toISOString();
 
       appointments.push({
         id: makeId("appt", appointments.length + 1),
@@ -153,8 +154,18 @@ function buildAppointments(clients: Client[]): Appointment[] {
         amount: service.price,
         notes: status === "walk-in" ? "Llegó sin cita" : "",
         source: status === "walk-in" ? "walk-in" : "scheduled",
-        createdAt: subDays(new Date(start), 1).toISOString(),
-        cancellable: status === "pending" || status === "walk-in"
+        createdAt,
+        updatedAt: createdAt,
+        provider: "local",
+        syncStatus: "pending",
+        cancellable: status === "pending" || status === "walk-in",
+        statusHistory: [
+          {
+            status,
+            timestamp: createdAt,
+            reason: status === "walk-in" ? "Walk-in customer" : "Scheduled appointment"
+          }
+        ]
       });
     });
 
@@ -169,6 +180,8 @@ function buildAppointments(clients: Client[]): Appointment[] {
     const barber = barbers[slotIndex % barbers.length];
     const start = combineDate(today, hour, slotIndex % 2 === 0 ? 0 : 30);
     const end = addMinutes(new Date(start), service.duration).toISOString();
+    const status = slotIndex < 2 ? "completed" : slotIndex === 2 ? "pending" : slotIndex === 3 ? "walk-in" : slotIndex === 4 ? "no-show" : "pending";
+    const createdAt = subDays(new Date(start), 2).toISOString();
 
     appointments.push({
       id: makeId("appt", appointments.length + 1),
@@ -181,17 +194,30 @@ function buildAppointments(clients: Client[]): Appointment[] {
       barberName: barber.name,
       start,
       end,
-      status: slotIndex < 2 ? "completed" : slotIndex === 2 ? "pending" : slotIndex === 3 ? "walk-in" : slotIndex === 4 ? "no-show" : "pending",
+      status,
       paymentStatus: slotIndex < 2 ? "paid" : "pending",
       amount: service.price,
       notes: slotIndex === 4 ? "Reagendar con confirmación" : "",
       source: slotIndex === 3 ? "walk-in" : "scheduled",
-      createdAt: subDays(new Date(start), 2).toISOString(),
-      cancellable: true
+      createdAt,
+      updatedAt: createdAt,
+      provider: "local",
+      syncStatus: "pending",
+      cancellable: true,
+      statusHistory: [
+        {
+          status,
+          timestamp: createdAt,
+          reason: status === "walk-in" ? "Walk-in customer" : "Scheduled appointment"
+        }
+      ]
     });
   });
 
   const blockedStart = combineDate(today, 18, 0);
+  const blockedEnd = combineDate(today, 19, 0);
+  const blockedCreatedAt = new Date().toISOString();
+
   appointments.push({
     id: makeId("appt", appointments.length + 1),
     clientId: null,
@@ -202,14 +228,24 @@ function buildAppointments(clients: Client[]): Appointment[] {
     barberId: null,
     barberName: "Todos",
     start: blockedStart,
-    end: combineDate(today, 19, 0),
+    end: blockedEnd,
     status: "blocked",
     paymentStatus: "pending",
     amount: 0,
     notes: "Bloqueo operativo",
     source: "blocked",
-    createdAt: new Date().toISOString(),
-    cancellable: false
+    createdAt: blockedCreatedAt,
+    updatedAt: blockedCreatedAt,
+    provider: "local",
+    syncStatus: "pending",
+    cancellable: false,
+    statusHistory: [
+      {
+        status: "blocked",
+        timestamp: blockedCreatedAt,
+        reason: "Emergency closure"
+      }
+    ]
   });
 
   return appointments;
